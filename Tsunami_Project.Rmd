@@ -1,0 +1,231 @@
+---
+title: "Tsunami Project"
+author: "Tim Jak & Koen Veenenbos, Team: JakVeenenbos"
+date: "Februari 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+## Libraries, working directory and functions
+
+In the first part of the script the required libraries are imported. After that the working directory is set to the directory of where you stored the project. This has to be done manually! The last part of these lines of code are for calling three functions, which are stored in other scripts.
+
+The first function (WikiToR) was used to import data from a Wikipedia page to R. In this case it was the Gross Domestic Product (GDP) of all countries, which could be joined later with the Tsunami dataste. The second function was used to create a selection on the data that we imported from the source website. This data contained all Tsunami data needed. The last function is similarly to the second one. This function also creates a selection but makes some other choices on what to select and thus created another output variable. 
+
+```{r, message=FALSE}
+
+#Import the necessary data
+library(rvest) #To download the external internet data
+library(plyr) #To count the number of occasions per country
+library(maps) #To plot the dot map
+library(rworldmap) #To plot the frequency map
+library(RColorBrewer) #To get the colours for the frequency map
+library(leaflet) #To create the interactive map
+library(plotly) #To create interactive scatterplot
+
+#Set the current working directory
+setwd("/home/user/GeoscriptingProject")
+
+#Import other R functions
+source("./R/WikiToR.R")
+source("./R/SelectData.R")
+source("./R/SelectDataOrigin.R")
+
+```
+
+
+## Defining variables
+
+First, a few variables needed to be created that are used to get a selection of the dataset. The period can be adjusted and extra data could be added to the Tsunami dataset. Also, the Wikipedia website with the GDP data can be entered here. 
+
+```{r, message=FALSE}
+
+#Input variables
+#Function SelectData
+#Optional are: MONTH, DAY, LOCATION_NAME
+Year <- 2000
+Selection <- c("MONTH", "DAY", "LOCATION_NAME") 
+
+#Function SelectDataOrigin
+#Optional are: COUNTRY, DAY, HOUR, MINUTE, SECOND, CAUSE_CODE, FOCAL_DEPTH, PRIMARY_MAGNITUDE, TOTAL_DEATHS, TOTAL_HOUSES_DESTROYED
+Selection_origin <- c("COUNTRY", "DAY", "HOUR", "MINUTE", "SECOND", "CAUSE_CODE", "FOCAL_DEPTH", "PRIMARY_MAGNITUDE", "TOTAL_DEATHS", "TOTAL_HOUSES_DESTROYED")
+
+#Function ImportData
+URL <- "https://en.wikipedia.org/wiki/List_of_countries_by_GDP_(nominal)_per_capita"
+NTable <- 5
+Header1 <- "Country"
+Header2 <- "US$"
+
+```
+
+
+## Script to create database
+
+Before plotting the maps, some preprocessing had to be done. First the command 'system' was used to run an external Python script which downloaded the data and transformed the .txt file to a .csv file. This is done for two different datasets. The first dataset (TsunamiCSV) contains all the locations where the tsunami reached the land. Basically these we the countries (locations) that were struck by the tsunami. The second dataset (TsunamiCSVOrigin) contains the origin or source locations of the tsunami. In most cases this was an earthquake. 
+
+Next, the read.csv tool is used read the csv-file and create datasets in R. Then the allready loaded R script is used to select the required data from the datasets. Also,  “_origin” is added to the headers of the TsunamiCSVOrigin dataset. This to be able to merge both datasets, without having two similar headers. The result of this merge is one Tsunami dataset.
+
+After merging the datasets, another dataset is imported from Wikipedia by using the earlier created R script. This dataset contained all GDP data, which will be merged with the Tsunami dataset, based on the country name.
+
+To see which countries were hit most by tsunamis, a calculation had to be made to see how many times a country occured in the dataset. This was done with the count function. This column is joined to the Tsunami dataset as well. 
+
+The last part of this section is to remove the countries where no Tsunami occured and countries which did not contain longitude or latitude data.
+
+```{r, message=FALSE}
+
+#Run Python code in R
+system("python ./Python/DownloadConvertData.py")
+
+#Retrieve the TsunamiData and TsunamiDataOrigin out of the csv file created in the Python script
+#TsunamiData contains the data of tsunamis which entered the mainland, 
+#while the TsunamiDataOrigin contains the source of the tsunami
+TsunamiCSV <- read.csv("./Data/tsevent.csv", header = TRUE, sep = "\t", dec = ".")
+TsunamiCSVOrigin <- read.csv("./Data/tsorigin.csv", header = TRUE, sep = "\t", dec = ".")
+
+#Select the period and the specific data you need for the TsunamiData and TsunamiDataOrigin files
+#Select the columns you want the data with those two functions
+SelectData(Year, Selection)
+SelectDataOrigin(Year, Selection_origin)
+
+#Change the column names of the Origin Dataset, so they don't match with the other Tsunami DataSet
+colnames(TsunamiCSVOriginSel) <- paste(colnames(TsunamiCSVOriginSel), "origin", sep = "_")
+
+#Merge the TsunamiDataSet and the TsunamiDataSetOrigin (which contain the source locations of the tsunami)
+MergeTsunamiData <- merge(TsunamiCSVSel, TsunamiCSVOriginSel, by.x = "TSEVENT_ID", by.y = "ID_origin", all = TRUE)
+
+#Import additional data with this function:
+#This function creates the variable GDPCountryDF, with information about GDP per country
+ImportData(URL, NTable, Header1, Header2)
+
+#Create a DataFrame out of the GDPCountry list
+GDPCountryDF <- as.data.frame(GDPCountry)
+
+#Make sure the countries are written in uppercase
+GDPCountryDF$Country <- toupper(GDPCountryDF$Country)
+
+#Merge the GDP data with the tsunami event data
+MergeGDP <- merge(MergeTsunamiData, GDPCountryDF, by.x = "COUNTRY", by.y = "Country", all = TRUE)
+
+#Count the number of times a country got hit
+NCountry <- count(MergeTsunamiData$COUNTRY)
+
+#Merge the number of occasions with the tsunami event data
+TsunamiData <- merge(MergeGDP, NCountry, by.x = "COUNTRY", by.y = "x", all = TRUE)
+
+#Delete the countries where no tsunami events have been recorded and the events without coordinates
+TsunamiData <- TsunamiData[!is.na(TsunamiData$TSEVENT_ID),]
+TsunamiData <- TsunamiData[!is.na(TsunamiData$LATITUDE) | !is.na(TsunamiData$LONGITUDE), ]
+
+```
+
+
+## Create dot map
+
+To really get an idea where the tsunamis struck, a simple dot map is created to get a good overview. 
+For this some plot settings are set with the par function. After that, an online world map was added which can be accessed by a library. Al the points in the dataset with an longitude and latitude are plotted by the function 'points'.
+
+```{r, message=FALSE}
+
+#Settings of outlines of the map
+par(mai=c(0,0,0.2,0),xaxs="i",yaxs="i")
+
+#Create map using standaard world map
+map("world", fill=TRUE, col="cornsilk")
+title("Tsunami events from 2000 till present")
+points(TsunamiCSVSel$LONGITUDE , TsunamiCSVSel$LATITUDE, col="firebrick3", pch=16, cex = 0.5)  
+
+
+```
+
+
+## Create frequency map
+
+It's nice to know how many times a country was hit by a tsunami in the predefined period. For this a choropleth map is created to show which countries are hit the most and which are never hit (indicated by a grey colour). 
+
+The joinCountryData2Map tools makes a variable that uses the column COUNTRY in the Tsunami dataset and joins this with the column NAME of the database of worldmap. By doing this, all the data of the Tsunami dataset is linked to the worldmap. By this, the frequency a country got hit, could be easily visualized per country.
+
+For the plotting itself the mapCountryData tool is used. It makes use of the previously created column 'freq', which contains the frequency of a country in the dataset. The LogFixedWidth method was used to visualize the frequency. There were several other options here, but due to the large number Japan was hit by tsunamis, the decision was made to use the LogFixedWidth.
+
+```{r, message=FALSE}
+
+#create a map-shaped window
+mapDevice('x11')
+
+#join to a coarse resolution map
+ConnectMaps <- joinCountryData2Map(TsunamiData, joinCode="NAME", nameJoinColumn="COUNTRY")
+
+#Plot the map according to the specified settings
+mapCountryData(ConnectMaps, nameColumnToPlot = "freq", catMethod = "logFixedWidth", 
+               colourPalette = brewer.pal(7, "YlOrRd"), 
+               mapTitle = "Countries most hit by tsunami's from 2000 till present", 
+               missingCountryCol = "gray96", oceanCol = "lightblue")
+
+
+
+```
+
+
+## Create interactive map
+
+Additionally, some extra data had to be linked to the dots on the first map. However, because there are over the 10,000 events it could become very unstructured. Therefore the cluster function offered a solution. By zooming in on the map, the dots got split. After this, additional information like the location, date,  Tsunami event,  magnitude of the earthquake and the GDP of the country was added to each point. An tsunami icon was manually loaded and place in the folder 'Icons'. For creating the interactive map, the leaflet package was used. 
+
+```{r, message=FALSE}
+
+#Reset plot
+par(mai=c(0,0,0,0))
+
+#Create tsunami icon
+tsunami_icon <- makeIcon(iconUrl = 'Icons/tsunami.png',  
+                         iconWidth = 32, iconHeight = 37, 
+                         iconAnchorX = 16, iconAnchorY = 36)
+
+#Map with clusterfunctie and specific popups
+leaflet() %>% addTiles() %>%
+  addMarkers(data = TsunamiData, 
+             TsunamiData$LONGITUDE, TsunamiData$LATITUDE,
+             popup = paste0("<B><U>Location: ", TsunamiData$LOCATION_NAME,", ", TsunamiData$COUNTRY, "</U></B><br>",
+                            "Date: ", TsunamiData$DAY, "-", TsunamiData$MONTH, "-", TsunamiData$YEAR, "<br>",
+                            "Tsunami ID: ", TsunamiData$TSEVENT_ID, "<br>",
+                            "Earthquake magnitude: ", TsunamiData$PRIMARY_MAGNITUDE_origin, "<br>",
+                            "Gross Domestic Product ($): ", TsunamiData$US.
+                            ),
+             icon = tsunami_icon,
+             clusterOptions = markerClusterOptions()
+  )
+
+```
+
+
+## Scatterplot Magnitude of an earthquake and number of deaths
+
+At last, the relation between the magnitude of the earthquake and the number of deaths is visualized in a scatter plot. The idea was to give the bubbles the colour of the continent to which the country belongs. However, it was harder than expected on forehand to add the continent data. Therefore the number of houses destroyed by the tsunami were added as extra indication.
+
+```{r, message=FALSE}
+
+#Create a well describing legend name
+colnames(TsunamiCSVOriginSel)[which(names(TsunamiCSVOriginSel) == "TOTAL_HOUSES_DESTROYED_origin")] <- "Houses_destroyed"
+
+#Create the scatterplot
+plot_ly(TsunamiCSVOriginSel, 
+        x=~PRIMARY_MAGNITUDE_origin, 
+        y=~TOTAL_DEATHS_origin, 
+        text=~paste0("Country: ", COUNTRY_origin, "<br>",
+                          "Year: ", YEAR_origin, "<br>",
+                          "Tsunami ID: ", ID_origin, "<br>"), 
+        color=~Houses_destroyed, 
+        colors = "Reds", 
+        type="scatter", 
+        mode="marker",
+        marker = list(size = 10))%>%
+  layout(title = 'Number of victims based on magnitude of earthquake',
+         xaxis = list(showgrid = TRUE, title = "Magnitude earthquake"),
+         yaxis = list(showgrid = TRUE, title = "number of deaths (log)", type = "log"),
+         plot_bgcolor = "gainsboro",
+         showlegend = FALSE)
+
+```
+
